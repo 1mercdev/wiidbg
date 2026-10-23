@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-only
+name: ci
+on: [push, pull_request]
+
+jobs:
+  host-tests:                 # fast; needs only gcc and python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+
+  wii-build:                  # cross-compiles the .dol files with devkitPPC
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitppc
+    steps:
+      - uses: actions/checkout@v4
+      - run: dkp-pacman -S --noconfirm wii-dev
+      - run: make stub target
