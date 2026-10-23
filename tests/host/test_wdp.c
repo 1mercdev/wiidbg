@@ -1,0 +1,142 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/*
+ * Host-side test for common/wdp.c. Runs on your PC with plain gcc: no Wii,
+ * no emulator. Reads tests/vectors.txt, the same file the Python tests read.
+ *
+ * Usage: test_wdp <path/to/vectors.txt>
+ */
+#include <stdio.h>
+#include <string.h>
+#include "../../common/wdp.h"
+
+static int failures;
+#define CHECK(cond, ...)                                              \
+    do {                                                              \
+        if (!(cond)) {                                                \
+            failures++;                                               \
+            printf("  FAIL line %d: ", line_no);                      \
+            printf(__VA_ARGS__);                                      \
+            printf("\n");                                             \
+        }                                                             \
+    } while (0)
+
+static int hex_to_bytes(const char *hex, uint8_t *out, size_t n)
+{
+    if (strlen(hex) != n * 2)
+        return -1;
+    for (size_t i = 0; i < n; i++) {
+        unsigned v;
+        if (sscanf(hex + 2 * i, "%2x", &v) != 1)
+            return -1;
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
+static int err_from_name(const char *name)
+{
+    if (!strcmp(name, "MAGIC"))   return WDP_E_MAGIC;
+    if (!strcmp(name, "KIND"))    return WDP_E_KIND;
+    if (!strcmp(name, "FLAGS"))   return WDP_E_FLAGS;
+    if (!strcmp(name, "TOO_BIG")) return WDP_E_TOO_BIG;
+    return 1; /* never a valid wdp_err */
+}
+
+int main(int argc, char **argv)
+{
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s vectors.txt\n", argv[0]);
+        return 2;
+    }
+    FILE *f = fopen(argv[1], "r");
+    if (!f) { perror("vectors.txt"); return 2; }
+
+    char buf[256];
+    int line_no = 0, valid_n = 0, invalid_n = 0;
+
+    while (fgets(buf, sizeof buf, f)) {
+        line_no++;
+        if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\0')
+            continue;
+
+        char kind_word[16], hex[64];
+        if (sscanf(buf, "%15s %63s", kind_word, hex) != 2) {
+            failures++;
+            printf("  FAIL line %d: unparsable vector\n", line_no);
+            continue;
+        }
+
+        uint8_t wire[WDP_HEADER_SIZE];
+        CHECK(hex_to_bytes(hex, wire, sizeof wire) == 0, "bad hex");
+
+        if (!strcmp(kind_word, "valid")) {
+            unsigned ver, kind, seq, cmd, status, flags, len;
+            char dummy[16];
+            int n = sscanf(buf, "%15s %63s %u %u %u %u %u %u %u", dummy, hex,
+                           &ver, &kind, &seq, &cmd, &status, &flags, &len);
+            CHECK(n == 9, "valid vector needs 7 numeric fields");
+
+            wdp_header h;
+            int rc = wdp_header_decode(wire, &h);
+            CHECK(rc == WDP_E_OK, "decode failed: %s", wdp_err_str(rc));
+            if (rc == WDP_E_OK) {
+                CHECK(h.version == ver,   "version %u != %u", h.version, ver);
+                CHECK(h.kind == kind,     "kind %u != %u", h.kind, kind);
+                CHECK(h.seq == seq,       "seq %u != %u", h.seq, seq);
+                CHECK(h.cmd == cmd,       "cmd %u != %u", h.cmd, cmd);
+                CHECK(h.status == status, "status %u != %u", h.status, status);
+                CHECK(h.flags == flags,   "flags %u != %u", h.flags, flags);
+                CHECK(h.len == len,       "len %u != %u", h.len, len);
+
+                /* Round trip: encode(decode(x)) must give x back exactly. */
+                uint8_t again[WDP_HEADER_SIZE];
+                CHECK(wdp_header_encode(&h, again) == WDP_E_OK, "encode failed");
+                CHECK(memcmp(again, wire, sizeof wire) == 0, "round-trip mismatch");
+            }
+            valid_n++;
+        } else if (!strcmp(kind_word, "invalid")) {
+            char name[16], dummy[16];
+            int n = sscanf(buf, "%15s %63s %15s", dummy, hex, name);
+            CHECK(n == 3, "invalid vector needs an error name");
+            wdp_header h;
+            int want = err_from_name(name);
+            int rc = wdp_header_decode(wire, &h);
+            CHECK(rc == want, "expected %s (%d), got %s (%d)", name, want,
+                  wdp_err_str(rc), rc);
+            invalid_n++;
+        } else {
+            CHECK(0, "unknown vector type '%s'", kind_word);
+        }
+    }
+    fclose(f);
+
+    /* A few direct API checks that don't belong in the shared file. */
+    {
+        int line_no = -1;
+        wdp_header h;
+        uint8_t out[WDP_HEADER_SIZE];
+        CHECK(wdp_header_decode(NULL, &h) == WDP_E_ARG, "NULL input");
+        CHECK(wdp_header_encode(NULL, out) == WDP_E_ARG, "NULL header");
+
+        /* On a failed decode the output must be left untouched. */
+        wdp_header sentinel;
+        wdp_header_init(&sentinel, WDP_KIND_EVENT, 77, 5, 0, 0);
+        wdp_header copy = sentinel;
+        uint8_t junk[WDP_HEADER_SIZE] = {0};
+        CHECK(wdp_header_decode(junk, &copy) == WDP_E_MAGIC, "junk should fail");
+        CHECK(memcmp(&copy, &sentinel, sizeof copy) == 0,
+              "failed decode modified its output");
+
+        /* Big-endian helpers: independent of host byte order. */
+        uint8_t b[4];
+        wdp_put_u32(b, 0x01020304u);
+        CHECK(b[0] == 1 && b[1] == 2 && b[2] == 3 && b[3] == 4, "put_u32 order");
+        CHECK(wdp_get_u32(b) == 0x01020304u, "get_u32 round trip");
+        wdp_put_u16(b, 0xA1B2u);
+        CHECK(b[0] == 0xA1 && b[1] == 0xB2, "put_u16 order");
+    }
+
+    printf("test_wdp: %d valid + %d invalid vectors, %d failure(s)\n",
+           valid_n, invalid_n, failures);
+    return failures ? 1 : 0;
+}

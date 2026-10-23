@@ -1,0 +1,35 @@
+# Golden vectors for the WDP frame header. Read by BOTH:
+#   tests/host/test_wdp.c        (C codec,      common/wdp.c)
+#   client/tests/test_frame.py   (Python codec, client/wiidbg/frame.py)
+# If you change the wire format you must change this file, which forces
+# both implementations to be updated together.
+#
+# valid   <32 hex chars> <version> <kind> <seq> <cmd> <status> <flags> <len>
+# invalid <32 hex chars> <error: MAGIC|KIND|FLAGS|TOO_BIG>
+#
+# Hex is the 16 header bytes exactly as sent on the wire.
+
+# PING request, seq=1, 4-byte payload (worked example in docs/protocol.md)
+valid   57440100000100020000000000000004 1 0 1 2 0 0 4
+# PING response, seq=1, echoing 4 bytes
+valid   57440101000100020000000000000004 1 1 1 2 0 0 4
+# Unknown command answered with an error status and no payload
+valid   57440101002a99990001000000000000 1 1 42 39321 1 0 0
+# Event frame, event id 0x1001, payload of exactly the maximum size
+valid   57440102000010010000000000004000 1 2 0 4097 0 0 16384
+# Max-width fields (seq, cmd, status = 0xffff) to catch sign/width bugs
+valid   57440101ffffffffffff000000004000 1 1 65535 65535 65535 0 16384
+# Different version byte still DECODES (caller decides policy; see protocol.md)
+valid   57440900000700010000000000000000 9 0 7 1 0 0 0
+
+# --- frames a receiver must reject ---
+# not our protocol at all (looks like the start of an HTTP request)
+invalid 474554202f20485454502f312e310d0a MAGIC
+# unknown kind (3)
+invalid 57440103000100020000000000000000 KIND
+# flags we do not understand
+invalid 57440100000100020000000100000000 FLAGS
+# payload length just over the cap (0x4001)
+invalid 57440100000100020000000000004001 TOO_BIG
+# payload length claiming 4 GiB: the remote-crash attempt the cap exists to stop
+invalid 574401000001000200000000ffffffff TOO_BIG
