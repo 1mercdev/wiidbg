@@ -1,0 +1,14 @@
+# devkitPPC build output
+*.o
+*.elf
+*.dol
+*.map
+build/
+
+# host test binaries
+tests/host/bin/
+
+# python
+__pycache__/
+*.egg-info/
+.venv/
