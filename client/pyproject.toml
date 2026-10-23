@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wiidbg"
+version = "0.0.1"
+description = "PC-side client for the wiidbg Wii debugger (Wii Debug Protocol)"
+readme = "../README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-only" }
+dependencies = []          # standard library only, on purpose: easy to install anywhere
+
+[tool.setuptools.packages.find]
+include = ["wiidbg*"]
