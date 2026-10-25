@@ -12,3 +12,5 @@ tests/host/bin/
 __pycache__/
 *.egg-info/
 .venv/
+*.orig
+*.rej

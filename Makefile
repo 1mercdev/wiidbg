@@ -8,15 +8,20 @@ CC      ?= gcc
 CFLAGS_HOST := -std=c11 -pedantic -Wall -Wextra -Werror -g -fsanitize=address,undefined
 BIN     := tests/host/bin
 
-.PHONY: test test-c test-py stub target clean
+.PHONY: test test-c test-py stub target clean hostserver
 
 test: test-c test-py
 
 # Compiles the portable C (common/) for the PC and runs it against the shared
 # vectors. -fsanitize makes memory bugs and undefined behaviour fail loudly.
-test-c: $(BIN)/test_wdp $(BIN)/test_wdlog
+test-c: $(BIN)/test_wdp $(BIN)/test_wdlog $(BIN)/test_conn $(BIN)/hostserver
 	$(BIN)/test_wdp tests/vectors.txt
 	$(BIN)/test_wdlog
+	$(BIN)/test_conn
+
+# A fake Wii stub that runs on the PC (see tests/host/hostserver.c).
+hostserver: $(BIN)/hostserver
+	tests/host/bin/hostserver
 
 $(BIN)/test_wdp: tests/host/test_wdp.c common/wdp.c common/wdp.h
 	@mkdir -p $(BIN)
@@ -26,7 +31,17 @@ $(BIN)/test_wdlog: tests/host/test_wdlog.c common/wdlog.c common/wdlog.h
 	@mkdir -p $(BIN)
 	$(CC) $(CFLAGS_HOST) tests/host/test_wdlog.c common/wdlog.c -o $@
 
-test-py:
+$(BIN)/test_conn: tests/host/test_conn.c common/wdp_conn.c common/wdp_conn.h common/wdp.c common/wdp.h
+	@mkdir -p $(BIN)
+	$(CC) $(CFLAGS_HOST) tests/host/test_conn.c common/wdp_conn.c common/wdp.c -o $@
+
+HOSTSERVER_SRC := tests/host/hostserver.c tests/host/wnet_posix.c common/wdp_server.c \
+                  common/wdp_conn.c common/wdp.c common/wdlog.c
+$(BIN)/hostserver: $(HOSTSERVER_SRC) common/wdp_server.h common/wnet.h common/wdp_conn.h common/wdp.h common/wdlog.h
+	@mkdir -p $(BIN)
+	$(CC) $(CFLAGS_HOST) $(HOSTSERVER_SRC) -o $@
+
+test-py: $(BIN)/hostserver
 	cd client && python3 -m unittest discover -s tests -v
 
 # Wii builds (need DEVKITPRO / DEVKITPPC in the environment).
