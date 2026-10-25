@@ -33,3 +33,28 @@ invalid 57440100000100020000000100000000 FLAGS
 invalid 57440100000100020000000000004001 TOO_BIG
 # payload length claiming 4 GiB: the remote-crash attempt the cap exists to stop
 invalid 574401000001000200000000ffffffff TOO_BIG
+
+# --- HELLO response payloads ---
+# hello   <hex payload> <stub_major> <stub_minor> <capabilities> <max_payload> <build or - if empty>
+# (decoding must give these fields; encoding those fields must reproduce the
+#  LEADING bytes of the payload. It is the whole payload except where trailing
+#  bytes were appended on purpose.)
+
+# typical stub: version 0.1, no capabilities yet, 16 KiB payloads (bytes verified by hand against docs/protocol.md)
+hello   0001000000000000000040000005302e312e30 0 1 0 16384 0.1.0
+# empty build string, every field non-zero
+hello   fffe0000deadbeef000040000000 255 254 3735928559 16384 -
+# longest legal build string (31 bytes)
+hello   010000000000000300001000001f78787878787878787878787878787878787878787878787878787878787878 1 0 3 4096 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# trailing bytes after the build string must be ignored (future fields)
+hello   0001000000000000000040000005302e312e30aabbcc 0 1 0 16384 0.1.0
+
+# hello_invalid <hex of payload> <error: SHORT|TOO_BIG>
+# only 13 bytes: the fixed part is 14
+hello_invalid 00010000000000000000400000 SHORT
+# build_len says 5 but only 3 bytes follow
+hello_invalid 0001000000000000000040000005616263 SHORT
+# build_len of 32 does not fit the 32-byte buffer (31 chars + terminator)
+hello_invalid 00010000000000000000400000207979797979797979797979797979797979797979797979797979797979797979 TOO_BIG
+# empty payload
+hello_invalid - SHORT
