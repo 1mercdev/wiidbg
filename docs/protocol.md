@@ -1,5 +1,7 @@
 # WDP: the Wii Debug Protocol (wire version 1)
 
+> Status: HELLO and PING are implemented (Phase 1). Memory commands are next.
+
 This document is the **specification**. `common/wdp.[ch]` (C) and
 `client/wiidbg/frame.py` (Python) are two implementations of it, and
 `tests/vectors.txt` is the shared test data that keeps them identical.
@@ -84,10 +86,24 @@ There are three independent mechanisms, from coarse to fine:
 3. **Unknown commands are an error response, not a disconnect.** A newer client
    talking to an older stub gets `ERR_UNKNOWN_CMD` and can degrade gracefully.
 
-Handshake policy: a client must send `HELLO` first. If the stub does not
-support the header `version`, it still answers (with `ERR_BAD_VERSION` and the
-version it *does* speak) rather than hanging up, which is why the C decoder
-does **not** reject unknown versions itself, leaving that policy to the caller.
+Handshake policy: clients **should** send `HELLO` first to learn the stub's
+version and capabilities, but stubs do **not require** it: every frame already
+carries the `version` byte, so each frame is checked on its own. (Phase 0 of
+this document said "must"; the implementation turned out simpler and just as
+safe without enforcing it, so the spec follows the code.)
+
+If a frame's `version` is one the stub does not speak, the stub **answers once
+and then closes the connection**:
+
+- the reply has `status = ERR_BAD_VERSION`, the request's `seq` and `cmd`, and a
+  1-byte payload holding the version the stub *does* speak;
+- it then hangs up, because with an unknown version it cannot trust `len`, so it
+  could not find the next frame boundary anyway.
+
+The `version` and `magic` bytes are checked **before** any other header field,
+straight from the raw bytes, so a future version that reuses the other fields
+differently can still be diagnosed. (This is verified by a test that sends a
+wrong version *and* garbage flags and expects the version error.)
 
 While the project is pre-1.0 the version stays at 1 and incompatible changes
 to *commands* are allowed; the header itself is considered frozen.
@@ -119,11 +135,11 @@ Ids are grouped so a new feature never needs to renumber an old one.
 | `0x1000–0x1FFF` | events (stub → PC) |
 | `0x8000–0xFFFF` | experimental / vendor; never standardised |
 
-Defined so far (**Phase 0**; handlers arrive in Phase 1):
+Defined so far (implemented in **Phase 1**):
 
 | id | name | request payload | response payload |
 |---:|------|-----------------|------------------|
-| `0x0001` | `HELLO` | empty | see below |
+| `0x0001` | `HELLO` | empty (a non-empty payload gets `ERR_BAD_PAYLOAD`) | see below |
 | `0x0002` | `PING`  | any bytes (≤ max) | the same bytes |
 
 `HELLO` response payload (all big-endian):
@@ -132,18 +148,54 @@ Defined so far (**Phase 0**; handlers arrive in Phase 1):
 |-------:|-----:|-------|
 | 0 | 1 | `stub_major` |
 | 1 | 1 | `stub_minor` |
-| 2 | 2 | reserved, 0 |
-| 4 | 4 | `capabilities` bitmask (none defined yet) |
+| 2 | 2 | reserved: sent as 0, **ignored** by receivers |
+| 4 | 4 | `capabilities` bitmask (no bits defined yet) |
 | 8 | 4 | `max_payload` the stub accepts |
-| 12 | 2 | `build_len` |
-| 14 | n | `build` string, UTF-8, `build_len` bytes (e.g. `0.0.1`) |
+| 12 | 2 | `build_len`, at most 31 |
+| 14 | n | `build` string, UTF-8, `build_len` bytes (e.g. `0.1.0`) |
 
-## 6. Rules for implementers
+Forward compatibility rules for this payload:
+
+- **Receivers ignore any bytes after the build string.** A future stub may append
+  fields; today's clients must keep working.
+- The build string is limited to 31 bytes so it fits a fixed 32-byte buffer with
+  a terminator on the Wii (no allocation). A longer `build_len` is an error.
+- A payload shorter than its own fields require is an error (`SHORT`).
+
+These rules are pinned by the `hello` and `hello_invalid` lines of
+`tests/vectors.txt`, which both the C and Python codecs must satisfy.
+
+`PING` is a plain echo: the reply carries exactly the request's payload. It
+exists to check the link and to measure round-trip time and throughput.
+
+## 6. Server behaviour (Phase 1)
+
+How the stub treats connections. These are policies, not wire format, and may
+evolve (see ADR 0005 for the structure that makes them easy to change).
+
+- Listens on TCP port **4242** (`WDP_DEFAULT_PORT`).
+- **One client at a time.** A debugger session is exclusive.
+- **Newest connection wins.** A new connection replaces the current one. A
+  stale session (Wi-Fi dropped without a clean close) can then never lock you
+  out. Trade-off: with no authentication, anyone who can reach the port can take
+  over the session.
+- **One request at a time.** The stub answers each request before reading the
+  next. A client may send several requests back to back ("pipelining"); the
+  extra bytes simply wait in the network buffer, and replies come back in order.
+  This bounds the stub's memory however fast a client sends.
+- **Unknown command** → `ERR_UNKNOWN_CMD`, connection stays open.
+- **Framing errors** (bad magic, unknown kind, non-zero flags, oversize length,
+  or a client sending a RESPONSE/EVENT frame) → the stub closes the connection
+  *without* replying. There is no way to resynchronise a TCP stream after
+  garbage, and replying to an unknown protocol would be pointless.
+
+## 7. Rules for implementers
 
 - Decode with explicit shifts or `struct`, never by casting a buffer to a struct.
 - Validate the header, then `len`, **before** reading the payload.
 - Drop the connection on a framing error (bad magic, kind, flags, oversize).
-  On a TCP stream there is no way to resynchronise after garbage.
+  On a TCP stream there is no way to resynchronise after garbage. The one
+  exception is a wrong `version`, which is answered first (section 3).
 - A stub handles one request at a time and never blocks the main loop for long.
 - Security: WDP v1 has **no authentication or encryption**. Anyone who can
   reach the port can read and write the console's memory. See README, "Security".

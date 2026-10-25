@@ -8,8 +8,10 @@ your PC, while a homebrew program runs on the console.
 It is also a **learning project**: the code, docs and decision records explain
 *why*, not only *what*. If something is not explained, that is a bug in the docs.
 
-> **Status: Phase 0 (scaffolding).** The stub boots and logs; the network,
-> memory access and watchpoints come in the next phases. See the roadmap.
+> **Status: Phase 1 (network transport).** The stub brings up the network and
+> answers `HELLO` and `PING`. Memory access and watchpoints come in the next
+> phases. See the roadmap. Phase 1 is verified on a PC (unit, state-machine and
+> end-to-end tests); the Wii-specific network code has not yet been run.
 
 ## How it fits together
 
@@ -32,15 +34,15 @@ It is also a **learning project**: the code, docs and decision records explain
 
 | path | what | runs on |
 |------|------|---------|
-| `common/` | portable C shared by everything: `wdp` (frame codec), `wdlog` (logging core) | Wii **and** PC (tests) |
-| `stub/` | the on-console agent, plus Wii-only log sinks | Wii |
+| `common/` | portable C shared by everything: `wdp` (codecs), `wdp_conn` (protocol state machine), `wdp_server` (connection loop), `wnet.h` (platform boundary), `wdlog` (logging core) | Wii **and** PC (tests) |
+| `stub/` | the on-console agent, plus the Wii-only parts: libogc networking (`wnet_wii.c`) and log sinks | Wii |
 | `target/` | a tiny program with a known counter, used as debugging ground truth | Wii |
-| `client/` | Python package `wiidbg`: frame codec now, commands and CLI next | PC |
-| `tests/` | `vectors.txt` (shared golden data) and the C host tests | PC |
+| `client/` | Python package `wiidbg`: codecs, `Connection`, and a CLI | PC |
+| `tests/` | `vectors.txt` (shared golden data), C host tests, and `hostserver` (a fake stub that runs on the PC) | PC |
 | `docs/` | protocol spec, logging design, and `adr/` (decision records) | n/a |
 | `tools/` | deploy helpers | PC |
 
-Start reading here: `docs/protocol.md`, then `docs/logging.md`, then `docs/adr/`.
+Start reading here: `docs/architecture.md`, then `docs/protocol.md`, then `docs/logging.md`, then `docs/adr/`.
 
 ## Quick start: run the tests (no Wii needed)
 
@@ -49,9 +51,34 @@ make test      # C host tests (with sanitizers) + Python tests
 ```
 
 This works anywhere with `gcc` and `python3`. The **same** `common/*.c` that
-will run on the Wii is compiled for your PC and checked against
-`tests/vectors.txt`, which the Python client is checked against too. That is how
-we know both ends agree on the wire format before any hardware is involved.
+runs on the Wii is compiled for your PC and checked against
+`tests/vectors.txt`, which the Python client is checked against too. It also
+starts `hostserver` (the real server loop on PC sockets) and talks to it with the
+real Python client. That is how we know both ends agree before any hardware is
+involved.
+
+## Try it without a Wii
+
+```sh
+make hostserver
+tests/host/bin/hostserver              # prints: listening 127.0.0.1:<port>
+
+cd client                              # in a second terminal
+python3 -m wiidbg 127.0.0.1:<port> hello
+python3 -m wiidbg 127.0.0.1:<port> ping -n 5 -s 4096
+```
+
+## Try it in Dolphin (or on a Wii)
+
+```sh
+make stub
+make -C stub run  # or run the .dol on a real Wii
+```
+
+The stub shows its IP address on screen and a ready-to-copy command, e.g.
+`python -m wiidbg <ip> hello`. In Dolphin the address shown may not be reachable
+from your PC the way a real console's would be; if it is not, try `127.0.0.1`.
+(Dolphin's network emulation is the first thing to verify in Phase 1.)
 
 ## Building for the Wii
 
@@ -64,16 +91,12 @@ we know both ends agree on the wire format before any hardware is involved.
 4. Run a `.dol` in Dolphin (`make -C stub run`), or on a real Wii with the
    Homebrew Channel: `WIILOAD=tcp:<wii-ip> tools/deploy.sh stub`.
 
-> The Wii-side code and Makefiles were written **without** access to devkitPPC,
-> so they have not been compiled yet. Treat "does `make stub` build?" as the
-> first thing to verify; the portable parts are already tested.
-
 ## Roadmap
 
 | phase | goal | proves |
 |------:|------|--------|
-| 0 | scaffolding, spec, codecs, logging, tests | toolchain works; ends agree on the wire format |
-| 1 | network transport, `HELLO`/`PING` | PC and Wii talk |
+| 0 ✅ | scaffolding, spec, codecs, logging, tests | toolchain works; ends agree on the wire format |
+| 1 ✅ | network transport, `HELLO`/`PING` | PC and Wii talk. Still to confirm in Dolphin / on hardware |
 | 2 | memory read/write with range validation and cache maintenance | counter climbs, can be reset |
 | 3 | data watchpoints (DABR) with single-step re-arm | hit PC matches the `stw` in the disassembly |
 | 4 | execution breakpoints (IABR), register dump, resume/step | a real debugger |
@@ -88,4 +111,4 @@ trust, and do not leave it running unattended.
 
 ## License
 
-GPL-3.0-only. See `LICENSE` and `docs/adr/0004-license.md`.
+GPL-3.0-only. See `LICENSE`.
