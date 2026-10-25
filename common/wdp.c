@@ -84,6 +84,62 @@ int wdp_header_decode(const uint8_t in[WDP_HEADER_SIZE], wdp_header *h)
     return WDP_E_OK;
 }
 
+int wdp_hello_encode(const wdp_hello *h, uint8_t *out, size_t cap)
+{
+    if (!h || !out)
+        return WDP_E_ARG;
+
+    /* Find the build string length, refusing unterminated or oversize input. */
+    size_t n = 0;
+    while (n < WDP_BUILD_MAX && h->build[n] != '\0')
+        n++;
+    if (n >= WDP_BUILD_MAX)
+        return WDP_E_TOO_BIG;
+    if (cap < WDP_HELLO_FIXED_SIZE + n)
+        return WDP_E_TOO_BIG;
+
+    /* Layout: 0 major(1) 1 minor(1) 2 reserved(2) 4 caps(4) 8 max_payload(4)
+     *         12 build_len(2) 14 build(n) */
+    out[0] = h->stub_major;
+    out[1] = h->stub_minor;
+    wdp_put_u16(out + 2, 0);                 /* reserved: always sent as 0 */
+    wdp_put_u32(out + 4, h->capabilities);
+    wdp_put_u32(out + 8, h->max_payload);
+    wdp_put_u16(out + 12, (uint16_t)n);
+    for (size_t i = 0; i < n; i++)
+        out[WDP_HELLO_FIXED_SIZE + i] = (uint8_t)h->build[i];
+    return (int)(WDP_HELLO_FIXED_SIZE + n);
+}
+
+int wdp_hello_decode(const uint8_t *in, size_t len, wdp_hello *h)
+{
+    if (!in || !h)
+        return WDP_E_ARG;
+    if (len < WDP_HELLO_FIXED_SIZE)
+        return WDP_E_SHORT;
+
+    size_t n = wdp_get_u16(in + 12);
+    if (n >= WDP_BUILD_MAX)
+        return WDP_E_TOO_BIG;
+    if (len < WDP_HELLO_FIXED_SIZE + n)
+        return WDP_E_SHORT;
+
+    wdp_hello t;
+    t.stub_major   = in[0];
+    t.stub_minor   = in[1];
+    /* in[2..3] reserved: ignored */
+    t.capabilities = wdp_get_u32(in + 4);
+    t.max_payload  = wdp_get_u32(in + 8);
+    for (size_t i = 0; i < n; i++)
+        t.build[i] = (char)in[WDP_HELLO_FIXED_SIZE + i];
+    t.build[n] = '\0';
+    for (size_t i = n + 1; i < WDP_BUILD_MAX; i++)
+        t.build[i] = '\0';                   /* no uninitialised bytes */
+
+    *h = t;
+    return WDP_E_OK;
+}
+
 const char *wdp_err_str(int err)
 {
     switch (err) {
@@ -92,7 +148,8 @@ const char *wdp_err_str(int err)
     case WDP_E_MAGIC:   return "bad magic (not a WDP stream)";
     case WDP_E_KIND:    return "unknown frame kind";
     case WDP_E_FLAGS:   return "unsupported flags set";
-    case WDP_E_TOO_BIG: return "payload length exceeds maximum";
+    case WDP_E_TOO_BIG: return "length exceeds maximum";
+    case WDP_E_SHORT:   return "payload too short";
     default:            return "unknown error";
     }
 }

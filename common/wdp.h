@@ -30,6 +30,8 @@ extern "C" {
 #define WDP_VERSION      1u       /* wire-format version, see docs/protocol.md */
 #define WDP_HEADER_SIZE  16u
 #define WDP_MAX_PAYLOAD  0x4000u  /* 16 KiB: bounds memory use on the Wii */
+#define WDP_DEFAULT_PORT 4242u    /* TCP port the stub listens on          */
+#define WDP_BUILD_MAX    32u      /* HELLO build string, incl. terminator   */
 
 /* Who is talking, and why. */
 enum wdp_kind {
@@ -66,7 +68,8 @@ enum wdp_err {
     WDP_E_MAGIC    = -2, /* first two bytes are not "WD": not our protocol */
     WDP_E_KIND     = -3, /* kind is not request/response/event             */
     WDP_E_FLAGS    = -4, /* reserved flag bits set that we don't understand*/
-    WDP_E_TOO_BIG  = -5  /* len exceeds WDP_MAX_PAYLOAD                    */
+    WDP_E_TOO_BIG  = -5, /* a length exceeds its allowed maximum           */
+    WDP_E_SHORT    = -6  /* payload is shorter than its fields require     */
 };
 
 /* ---- Header ----------------------------------------------------------- */
@@ -100,6 +103,32 @@ int wdp_header_decode(const uint8_t in[WDP_HEADER_SIZE], wdp_header *h);
 
 /* Human-readable name of a codec error, for logs. Never returns NULL. */
 const char *wdp_err_str(int err);
+
+/* ---- HELLO payload (command WDP_CMD_HELLO, response direction) ---------- */
+
+/* Fixed part of the HELLO response payload, followed by `build_len` bytes of
+ * UTF-8 text (docs/protocol.md section 5). */
+#define WDP_HELLO_FIXED_SIZE 14u
+
+typedef struct wdp_hello {
+    uint8_t  stub_major;
+    uint8_t  stub_minor;
+    uint32_t capabilities;           /* bitmask; no bits are defined yet */
+    uint32_t max_payload;            /* largest payload the stub accepts */
+    char     build[WDP_BUILD_MAX];   /* NUL-terminated, at most 31 chars */
+} wdp_hello;
+
+/* Serialise *h into out[0..cap). Returns the number of bytes written, or a
+ * negative wdp_err (WDP_E_ARG, WDP_E_TOO_BIG if the build string is too long
+ * or `cap` is too small). */
+int wdp_hello_encode(const wdp_hello *h, uint8_t *out, size_t cap);
+
+/* Parse a HELLO response payload of `len` bytes. Returns WDP_E_OK or a
+ * negative wdp_err (WDP_E_SHORT if truncated, WDP_E_TOO_BIG if the build
+ * string would not fit). Bytes after the build string are IGNORED on purpose:
+ * that is how future versions can append fields without breaking old clients.
+ * The reserved field is ignored too. */
+int wdp_hello_decode(const uint8_t *in, size_t len, wdp_hello *h);
 
 /* ---- Big-endian helpers (also used for payload fields) ---------------- */
 
