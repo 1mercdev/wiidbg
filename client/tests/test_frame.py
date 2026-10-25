@@ -27,6 +27,8 @@ def load_vectors():
             valid.append((bytes.fromhex(hexstr), [int(n) for n in nums]))
         elif parts[0] == "invalid":
             invalid.append((bytes.fromhex(parts[1]), parts[2]))
+        elif parts[0] in ("hello", "hello_invalid"):
+            continue   # payload vectors: checked by test_messages.py
         else:
             raise AssertionError(f"unknown vector type: {line}")
     return valid, invalid
