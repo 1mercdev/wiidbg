@@ -43,6 +43,7 @@ typedef struct wdp_server {
     size_t   rx_off;              /* next unconsumed byte in rx   */
     size_t   rx_len;              /* valid bytes in rx            */
     unsigned sessions;            /* clients served since start   */
+    int      last_accept_err;     /* last accept() error already logged (0 = none) */
 } wdp_server;
 
 /* Start listening. Returns 0 or a negative error. */

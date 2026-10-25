@@ -54,6 +54,7 @@ int wdp_server_start(wdp_server *s, uint16_t port, const wdp_conn_config *cfg)
     s->listener = -1;
     s->rx_off = s->rx_len = 0;
     s->sessions = 0;
+    s->last_accept_err = 0;
 
     if (wnet_listen(port, &s->listener) != WNET_OK) {
         WDLOG_E(WDLOG_SUB_NET, "cannot listen on port %u (error %d)",
@@ -84,10 +85,20 @@ void wdp_server_poll(wdp_server *s)
     /* A pending connection always wins over the current one (see header). */
     int fd;
     int rc = wnet_accept(s->listener, &fd);
-    if (rc == WNET_OK)
+    if (rc == WNET_OK) {
+        s->last_accept_err = 0;
         adopt_client(s, fd);
-    else if (rc < 0)
-        WDLOG_W(WDLOG_SUB_NET, "accept failed (error %d)", wnet_last_error());
+    } else if (rc < 0) {
+        /* This runs about 1000 times a second. If accept keeps failing the same
+         * way, say so ONCE; repeating it would flood the log (and the screen). */
+        int err = wnet_last_error();
+        if (err != s->last_accept_err) {
+            WDLOG_W(WDLOG_SUB_NET, "accept failed (error %d)", err);
+            s->last_accept_err = err;
+        }
+    } else {
+        s->last_accept_err = 0;           /* WNET_AGAIN: the normal idle case */
+    }
 
     if (s->client < 0)
         return;
