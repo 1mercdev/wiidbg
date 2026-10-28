@@ -44,8 +44,17 @@ enum wdp_kind {
 /* Command IDs are grouped in ranges so new features never collide.
  * See docs/protocol.md for the allocation policy. */
 enum wdp_cmd {
-    WDP_CMD_HELLO = 0x0001, /* handshake: version + capabilities (Phase 1) */
-    WDP_CMD_PING  = 0x0002  /* echo the payload back (Phase 1)             */
+    WDP_CMD_HELLO     = 0x0001, /* handshake: version + capabilities        */
+    WDP_CMD_PING      = 0x0002, /* echo the payload back                    */
+    WDP_CMD_MEM_READ  = 0x0100, /* read memory (Phase 2)                    */
+    WDP_CMD_MEM_WRITE = 0x0101  /* write memory (Phase 2)                   */
+};
+
+/* Capability bits, reported in the HELLO reply. A client asks "can you do X?"
+ * by testing a bit, instead of comparing version numbers. */
+enum wdp_cap {
+    WDP_CAP_MEM_READ  = 1u << 0,
+    WDP_CAP_MEM_WRITE = 1u << 1
 };
 
 /* Result of a request, carried in the response header. */

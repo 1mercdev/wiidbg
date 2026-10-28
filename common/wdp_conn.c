@@ -23,6 +23,13 @@ int wdp_conn_init(wdp_conn *c, const wdp_conn_config *cfg)
     c->hello.stub_minor   = cfg->stub_minor;
     c->hello.capabilities = cfg->capabilities;
     c->hello.max_payload  = WDP_MAX_PAYLOAD;
+    c->mem = cfg->mem;
+    /* Advertise only what we can really do: the bits follow from the backend,
+     * so the HELLO reply can never claim a feature that is not there. */
+    if (c->mem && c->mem->read)
+        c->hello.capabilities |= WDP_CAP_MEM_READ;
+    if (c->mem && c->mem->write)
+        c->hello.capabilities |= WDP_CAP_MEM_WRITE;
     memcpy(c->hello.build, cfg->build, n);   /* rest already zeroed: terminated */
     return 0;
 }
@@ -48,6 +55,73 @@ static void queue_error(wdp_conn *c, uint16_t seq, uint16_t cmd, uint16_t status
 
 /* ---- request handling -------------------------------------------------- */
 
+/* MEM_READ request:  u32 addr, u32 len.   Reply: `len` bytes of memory.
+ *
+ * ORDER MATTERS in this function: every check happens BEFORE the backend is
+ * touched, so a bad request can never reach memory. */
+static void handle_mem_read(wdp_conn *c)
+{
+    const wdp_header *h = &c->cur;
+
+    if (!c->mem || !c->mem->read) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_UNSUPPORTED);
+        return;
+    }
+    if (h->len != 8) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_BAD_PAYLOAD);
+        return;
+    }
+    uint32_t addr = wdp_get_u32(c->rx);
+    uint32_t n    = wdp_get_u32(c->rx + 4);
+
+    if (n == 0) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_BAD_PAYLOAD);
+        return;
+    }
+    if (n > WDP_MAX_PAYLOAD) {          /* the reply would not fit one frame */
+        queue_error(c, h->seq, h->cmd, WDP_ERR_TOO_BIG);
+        return;
+    }
+    if (!wmem_range_ok(addr, n)) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_RANGE);
+        return;
+    }
+    /* Read straight into the reply buffer: no intermediate copy. */
+    if (c->mem->read(addr, c->tx + WDP_HEADER_SIZE, n) < 0) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_INTERNAL);
+        return;
+    }
+    queue_response(c, h->seq, h->cmd, WDP_OK, n);
+}
+
+/* MEM_WRITE request: u32 addr, then the bytes to write.  Reply: empty.
+ * All-or-nothing: nothing is written unless every check passes. */
+static void handle_mem_write(wdp_conn *c)
+{
+    const wdp_header *h = &c->cur;
+
+    if (!c->mem || !c->mem->write) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_UNSUPPORTED);
+        return;
+    }
+    if (h->len < 5) {                   /* 4 address bytes + at least 1 data byte */
+        queue_error(c, h->seq, h->cmd, WDP_ERR_BAD_PAYLOAD);
+        return;
+    }
+    uint32_t addr = wdp_get_u32(c->rx);
+    uint32_t n    = h->len - 4;         /* cannot exceed MAX_PAYLOAD - 4 */
+
+    if (!wmem_range_ok(addr, n)) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_RANGE);
+        return;
+    }
+    if (c->mem->write(addr, c->rx + 4, n) < 0) {
+        queue_error(c, h->seq, h->cmd, WDP_ERR_INTERNAL);
+        return;
+    }
+    queue_response(c, h->seq, h->cmd, WDP_OK, 0);
+}
+
 /* Called when a complete request (c->cur header + c->rx payload) is available. */
 static void handle_request(wdp_conn *c)
 {
@@ -72,6 +146,12 @@ static void handle_request(wdp_conn *c)
          * always fits in the reply buffer. */
         memcpy(reply, c->rx, h->len);
         queue_response(c, h->seq, h->cmd, WDP_OK, h->len);
+        return;
+    case WDP_CMD_MEM_READ:
+        handle_mem_read(c);
+        return;
+    case WDP_CMD_MEM_WRITE:
+        handle_mem_write(c);
         return;
     default:
         /* Unknown command: say so and keep the connection. This is what lets

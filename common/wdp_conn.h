@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "wdp.h"
+#include "wmem.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,12 +42,16 @@ extern "C" {
 typedef struct wdp_conn_config {
     uint8_t     stub_major;
     uint8_t     stub_minor;
-    uint32_t    capabilities;  /* WDP capability bits; none defined yet */
-    const char *build;         /* e.g. "0.1.0"; at most 31 characters   */
+    uint32_t    capabilities;  /* extra WDP_CAP_* bits to advertise     */
+    const char *build;         /* e.g. "0.2.0"; at most 31 characters   */
+    const wmem_ops *mem;       /* memory backend, or NULL: then the memory
+                                * commands answer ERR_UNSUPPORTED. The struct
+                                * must outlive the connection (use a static). */
 } wdp_conn_config;
 
 typedef struct wdp_conn {
     wdp_hello  hello;                 /* prebuilt HELLO reply content        */
+    const wmem_ops *mem;              /* NULL = no memory access             */
 
     /* receive state: we are either reading a header or reading a payload */
     uint8_t    hdr[WDP_HEADER_SIZE];
