@@ -19,9 +19,14 @@ bottom layer knows which platform it runs on.
  frame.py      16-byte header             common/wdp_conn.c    protocol state machine (NO I/O)
                                           common/wdp.c         header + HELLO codecs
                                           ─────────────────────────────────────────────
-                       TCP                common/wnet.h        6-function platform boundary
+                       TCP                common/wnet.h        6-function network boundary
                   ◄──────────────►        ├─ stub/source/wnet_wii.c       libogc (the console)
                                           └─ tests/host/wnet_posix.c      BSD sockets (your PC)
+
+                                          common/wmem.c        memory ACCESS POLICY (which addresses)
+                                          common/wmem.h        2-function memory backend interface
+                                          ├─ stub/source/wmem_wii.c       real RAM + cache maintenance
+                                          └─ tests/host/wmem_fake.c       plain buffers (your PC)
 ```
 
 | layer | knows about | does NOT know about |
@@ -30,6 +35,8 @@ bottom layer knows which platform it runs on.
 | `wdp_conn` | what each command means, one connection's state | where bytes come from |
 | `wdp_server` | sockets (through `wnet.h`), sessions | the platform's socket API |
 | `wnet_*` | the platform's socket API | the protocol |
+| `wmem` policy | which addresses are allowed | how memory is accessed |
+| `wmem_*` backends | how bytes are read and written (caches) | whether a range is allowed |
 
 The payoff: the three middle layers are plain portable C. They are compiled and
 tested on your PC with ordinary tools, and then run unchanged on the console.
@@ -69,9 +76,11 @@ Two details worth noticing:
 |------|-----------|--------|
 | `tests/host/test_wdp.c` | codec vs `tests/vectors.txt` | C encodes/decodes the spec'd bytes |
 | `client/tests/test_frame.py`, `test_messages.py` | Python codec vs the **same** vectors | Python agrees with C |
-| `tests/host/test_conn.c` | state machine, bytes in/out, no sockets | protocol logic, edge cases, limits |
+| `tests/host/test_wmem.c` | the address policy, at every region boundary | a bad address is refused, including 32-bit wraparound |
+| `tests/host/test_conn.c` | state machine, bytes in/out, no sockets | protocol logic, edge cases, limits. With a recording fake memory it also proves a refused request never reaches memory |
 | `tests/host/test_wdlog.c` | logging core | ring buffers, merging, overflow |
-| `client/tests/test_integration.py` | real Python client ↔ `hostserver` over TCP | everything above, together |
+| `client/tests/test_integration.py` | real Python client ↔ `hostserver` (with fake RAM) over TCP | everything above, together: round trips, chunking, region edges, partial writes |
+| `client/tests/test_cli.py` | CLI parsing and hex dump | the user-facing text is right |
 
 `tests/host/hostserver.c` is the **same server loop as the stub**, on PC sockets.
 You can also run it by hand and point the client at it:
@@ -93,7 +102,10 @@ and anything about IOS. That is what Dolphin (and later real hardware) is for.
 3. **Payload codecs** (if it has structured payloads): C in `common/wdp.c`,
    Python in `messages.py`, and **shared vectors** in `tests/vectors.txt`.
 4. **Handler**: a `case` in `handle_request()` in `common/wdp_conn.c`. Hardware
-   access goes behind a small interface (like `wnet.h`) so it stays testable.
+   access goes behind a small interface (like `wnet.h` and `wmem.h`) so it stays
+   testable. Do every validity check before the first side effect, and test that a
+   refused request leaves the fake backend untouched. `handle_mem_write` is the
+   model to copy.
 5. **Tests first or alongside**: a case in `test_conn.c`, an end-to-end case in
    `test_integration.py` against `hostserver`.
 6. **Client**: a method on `Connection`, then a CLI subcommand.

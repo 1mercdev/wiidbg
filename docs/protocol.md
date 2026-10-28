@@ -1,6 +1,6 @@
 # WDP: the Wii Debug Protocol (wire version 1)
 
-> Status: HELLO and PING are implemented (Phase 1). Memory commands are next.
+> Status: HELLO, PING, MEM_READ and MEM_WRITE are implemented (Phases 1 and 2).
 
 This document is the **specification**. `common/wdp.[ch]` (C) and
 `client/wiidbg/frame.py` (Python) are two implementations of it, and
@@ -135,12 +135,14 @@ Ids are grouped so a new feature never needs to renumber an old one.
 | `0x1000–0x1FFF` | events (stub → PC) |
 | `0x8000–0xFFFF` | experimental / vendor; never standardised |
 
-Defined so far (implemented in **Phase 1**):
+Defined so far:
 
-| id | name | request payload | response payload |
-|---:|------|-----------------|------------------|
-| `0x0001` | `HELLO` | empty (a non-empty payload gets `ERR_BAD_PAYLOAD`) | see below |
-| `0x0002` | `PING`  | any bytes (≤ max) | the same bytes |
+| id | name | phase | request payload | response payload |
+|---:|------|:-----:|-----------------|------------------|
+| `0x0001` | `HELLO` | 1 | empty (a non-empty payload gets `ERR_BAD_PAYLOAD`) | see below |
+| `0x0002` | `PING`  | 1 | any bytes (≤ max) | the same bytes |
+| `0x0100` | `MEM_READ`  | 2 | `u32 addr`, `u32 len` | `len` bytes of memory |
+| `0x0101` | `MEM_WRITE` | 2 | `u32 addr`, then the bytes to write | empty |
 
 `HELLO` response payload (all big-endian):
 
@@ -149,7 +151,7 @@ Defined so far (implemented in **Phase 1**):
 | 0 | 1 | `stub_major` |
 | 1 | 1 | `stub_minor` |
 | 2 | 2 | reserved: sent as 0, **ignored** by receivers |
-| 4 | 4 | `capabilities` bitmask (no bits defined yet) |
+| 4 | 4 | `capabilities` bitmask (see "Capabilities" below) |
 | 8 | 4 | `max_payload` the stub accepts |
 | 12 | 2 | `build_len`, at most 31 |
 | 14 | n | `build` string, UTF-8, `build_len` bytes (e.g. `0.1.0`) |
@@ -168,7 +170,84 @@ These rules are pinned by the `hello` and `hello_invalid` lines of
 `PING` is a plain echo: the reply carries exactly the request's payload. It
 exists to check the link and to measure round-trip time and throughput.
 
-## 6. Server behaviour (Phase 1)
+
+### Capabilities
+
+A stub sets a bit only for what it can really do (the HELLO reply is built from
+the configured backends, so it cannot claim a feature that is missing).
+
+| bit | name | meaning |
+|----:|------|---------|
+| 0 | `MEM_READ`  | the stub can read memory |
+| 1 | `MEM_WRITE` | the stub can write memory |
+
+Without a capability the matching command answers `ERR_UNSUPPORTED`.
+
+### Memory commands (Phase 2)
+
+Background on caches and the memory map: [memory.md](memory.md). Design
+decisions: [ADR 0006](adr/0006-memory-access.md).
+
+**Allowed addresses.** Only the Wii's two RAM areas, through the CPU's normal
+(cached) addresses. A range must lie entirely inside **one** of them.
+
+| region | first byte | last byte | size |
+|--------|-----------:|----------:|-----:|
+| MEM1 | `0x80000000` | `0x817FFFFF` | 24 MiB |
+| MEM2 | `0x90000000` | `0x93FFFFFF` | 64 MiB |
+
+Everything else is `ERR_RANGE`: hardware registers (reading some has side
+effects), the uncached mirrors, unmapped addresses (they would crash the stub).
+A range that would run past `0xFFFFFFFF` is refused, not wrapped around.
+
+**Byte order.** Memory bytes are transferred exactly as stored. The Wii is
+big-endian, so a 32-bit value `0x01020304` appears as `01 02 03 04`. The protocol
+never reinterprets memory contents. (Header and payload *fields*, such as `addr`,
+are big-endian too, as everywhere in WDP.)
+
+`MEM_READ` (`0x0100`)
+
+| request | reply |
+|---------|-------|
+| `u32 addr`, `u32 len` (exactly 8 bytes) | `len` bytes, status `OK` |
+
+Checks, **in this order** (clients may rely on it; the first failure wins):
+`ERR_UNSUPPORTED` (no read capability) → `ERR_BAD_PAYLOAD` (request is not 8 bytes,
+or `len` is 0) → `ERR_TOO_BIG` (`len` exceeds `max_payload`) → `ERR_RANGE` →
+`ERR_INTERNAL` (the backend failed). Memory is touched only after every check
+has passed.
+
+`MEM_WRITE` (`0x0101`)
+
+| request | reply |
+|---------|-------|
+| `u32 addr`, then 1 or more data bytes | empty, status `OK` |
+
+The data is at most `max_payload - 4` bytes (4 bytes of the payload are the
+address). Checks, in order: `ERR_UNSUPPORTED` → `ERR_BAD_PAYLOAD` (payload shorter
+than 5 bytes) → `ERR_RANGE` → `ERR_INTERNAL`.
+
+- **A request is all or nothing.** If any check fails, nothing is written.
+- **A request whose payload exceeds `max_payload` is a framing error** (section 6):
+  the header check rejects it before the command is even looked at, and the
+  connection is closed. Clients must split large writes themselves.
+- After a successful write the stub makes the new bytes visible to the rest of the
+  console (data cache flushed, instruction cache invalidated), so patched code
+  runs. Details in memory.md.
+
+**Large transfers are the client's job.** The client splits a long read or write
+into several requests, each within the `max_payload` the stub reported in HELLO
+(never a hard-coded number). Splitting has one consequence worth knowing:
+
+> A single request is applied in one step. A write split over **several**
+> requests is **not atomic**: if a later request fails, the earlier ones have
+> already happened, and a running program may execute half-patched code in
+> between. Keep patches that must be atomic within one request.
+
+The Python client reports this case as `PartialWriteError`, saying how many bytes
+landed.
+
+## 6. Server behaviour
 
 How the stub treats connections. These are policies, not wire format, and may
 evolve (see ADR 0005 for the structure that makes them easy to change).
@@ -197,5 +276,6 @@ evolve (see ADR 0005 for the structure that makes them easy to change).
   On a TCP stream there is no way to resynchronise after garbage. The one
   exception is a wrong `version`, which is answered first (section 3).
 - A stub handles one request at a time and never blocks the main loop for long.
-- Security: WDP v1 has **no authentication or encryption**. Anyone who can
-  reach the port can read and write the console's memory. See README, "Security".
+- Security: WDP v1 has **no authentication or encryption**. Since Phase 2 that
+  means anyone who can reach the port can read and **write the console's memory**,
+  which is the same as running code on it. See README, "Security".
