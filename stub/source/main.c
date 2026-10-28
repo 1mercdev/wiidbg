@@ -3,7 +3,7 @@
  * wiidbg stub, Phase 1: network transport.
  *
  * Brings up the network, listens on TCP port 4242 and answers the WDP commands
- * HELLO and PING (see docs/protocol.md). No memory access yet: that is Phase 2.
+ * HELLO, PING, MEM_READ and MEM_WRITE (see docs/protocol.md).
  */
 #include <gccore.h>
 #include <stdio.h>
@@ -16,6 +16,7 @@
 #include "wdp.h"
 #include "wdp_server.h"
 #include "wiidbg_version.h"
+#include "wmem_wii.h"
 #include "wnet.h"
 
 static void *xfb;           /* external framebuffer: memory the video chip scans out */
@@ -44,6 +45,18 @@ static void video_init(void)
 /* Static, not on the stack: it holds two 16 KiB protocol buffers. */
 static wdp_server server;
 
+/* SELF-TEST AREA. Until the stub can live next to another program (Phase 6) the
+ * stub itself is the thing being inspected. Read these addresses from the PC:
+ *   - the counter climbs about 1000 times a second: read it twice and see it
+ *     change; write 0 to it and watch it restart from zero;
+ *   - the scratch buffer is 64 KiB, bigger than one protocol frame, so reading
+ *     and writing it exercises the client's chunking on the real thing.
+ * `volatile` stops the compiler from optimising the increments away, and the
+ * 32-byte alignment puts the counter alone in one cache line (the cache works in
+ * 32-byte lines), which makes cache behaviour easy to reason about later. */
+volatile u32 selftest_counter __attribute__((aligned(32)));
+static u8 selftest_scratch[64 * 1024] __attribute__((aligned(32)));
+
 int main(void)
 {
     video_init();
@@ -65,10 +78,13 @@ int main(void)
         WDLOG_E(WDLOG_SUB_NET, "network init failed (error %d)", wnet_last_error());
     } else {
         WDLOG_I(WDLOG_SUB_NET, "IP address: %s", ip);
-        const wdp_conn_config cfg = { 0, 1, 0, WIIDBG_VERSION };
+        const wdp_conn_config cfg = { .stub_major = 0, .stub_minor = 2, .build = WIIDBG_VERSION,
+                                      .mem = &wmem_wii_ops };
         if (wdp_server_start(&server, WDP_DEFAULT_PORT, &cfg) == 0)
             WDLOG_I(WDLOG_SUB_NET, "try: python -m wiidbg %s hello", ip);
     }
+    WDLOG_I(WDLOG_SUB_MEM, "counter @ 0x%08x", (unsigned)&selftest_counter);
+    WDLOG_I(WDLOG_SUB_MEM, "scratch @ 0x%08x (64 KiB)", (unsigned)selftest_scratch);
     WDLOG_I(WDLOG_SUB_CORE, "Press HOME to exit");
 
     unsigned tick = 0;
@@ -81,6 +97,8 @@ int main(void)
             if (WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME)
                 break;
         }
+
+        selftest_counter = selftest_counter + 1;   /* see the SELF-TEST AREA above */
 
         wdp_server_poll(&server);   /* never blocks; does nothing if not started */
         wdlog_flush();              /* the ONE place logs reach the screen */

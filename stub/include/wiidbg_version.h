@@ -4,6 +4,6 @@
 
 /* Stub (program) version. Independent of the protocol version in wdp.h:
  * the stub can gain features without changing the wire format. */
-#define WIIDBG_VERSION "0.1.0"
+#define WIIDBG_VERSION "0.2.0"
 
 #endif

@@ -2,8 +2,8 @@
 <app version="1">
   <name>wiidbg stub</name>
   <coder>1mercdev</coder>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <short_description>On-console debugger stub</short_description>
-  <long_description>Debug and live-patch memory over the network. Phase 1: network transport (HELLO/PING).
+  <long_description>Debug and live-patch memory over the network. Phase 2: memory read/write over the network.
 Licensed under GPL-3.0-only.</long_description>
 </app>
