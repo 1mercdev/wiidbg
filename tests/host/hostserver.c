@@ -19,6 +19,7 @@
 #include "../../common/wdlog.h"
 #include "../../common/wdp_server.h"
 #include "../../common/wnet.h"
+#include "wmem_fake.h"
 
 static uint32_t now_ms(void)
 {
@@ -48,7 +49,12 @@ int main(int argc, char **argv)
     if (wnet_init(ip, sizeof ip) != WNET_OK)
         return 1;
 
-    const wdp_conn_config cfg = { 0, 1, 0, "0.1.0-host" };
+    if (wmem_fake_init() != 0) {
+        fprintf(stderr, "cannot allocate fake RAM\n");
+        return 1;
+    }
+    const wdp_conn_config cfg = { .stub_major = 0, .stub_minor = 2, .build = "0.2.0-host",
+                                  .mem = &wmem_fake_ops };
     if (wdp_server_start(&srv, port, &cfg) != 0) {
         wdlog_flush();
         return 1;
