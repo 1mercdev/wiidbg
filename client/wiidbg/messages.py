@@ -25,6 +25,20 @@ assert _HELLO_FIXED.size == HELLO_FIXED_SIZE
 class Cmd(enum.IntEnum):
     HELLO = 0x0001
     PING = 0x0002
+    MEM_READ = 0x0100
+    MEM_WRITE = 0x0101
+
+
+class Cap(enum.IntFlag):
+    """Capability bits from the HELLO reply (see common/wdp.h, enum wdp_cap)."""
+    MEM_READ = 1 << 0
+    MEM_WRITE = 1 << 1
+
+
+# Convenience only. The stub is the authority on which addresses are allowed
+# (common/wmem.c); these let tools and tests talk about "the start of MEM2".
+MEM1_BASE, MEM1_SIZE = 0x80000000, 0x01800000
+MEM2_BASE, MEM2_SIZE = 0x90000000, 0x04000000
 
 
 class Status(enum.IntEnum):

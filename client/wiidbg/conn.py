@@ -12,11 +12,12 @@ It does three jobs the protocol needs on the PC side:
 from __future__ import annotations
 
 import socket
+import struct
 import time
 
 from .frame import (HEADER_SIZE, KIND_REQUEST, KIND_RESPONSE, MAX_PAYLOAD,
                     VERSION, FrameError, Header, TooBig)
-from .messages import DEFAULT_PORT, Cmd, Hello, Status
+from .messages import DEFAULT_PORT, Cap, Cmd, Hello, Status
 
 
 class WdpError(Exception):
@@ -43,6 +44,26 @@ class StatusError(WdpError):
         self.status = status
         self.cmd = cmd
         self.payload = payload
+
+
+class PartialWriteError(WdpError):
+    """A multi-chunk write failed part way through.
+
+    Writes larger than one frame are split into several requests, and the
+    sequence is NOT atomic: the first `written` bytes ARE in memory, the rest
+    are not. A running program could have executed half-patched code in between.
+    """
+
+    def __init__(self, written: int, total: int, cause: StatusError):
+        super().__init__(f"write failed after {written} of {total} bytes: {cause}")
+        self.written = written
+        self.total = total
+        self.cause = cause
+
+
+def _check_u32(name: str, value: int) -> None:
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ValueError(f"{name} must fit in 32 bits, got {value}")
 
 
 class Connection:
@@ -124,6 +145,70 @@ class Connection:
         if echoed != data:
             raise ProtocolError("PING reply differs from what was sent")
         return echoed
+
+    # -- memory ------------------------------------------------------------
+    def supports(self, cap: Cap) -> bool:
+        """True if the stub advertised this capability in HELLO."""
+        if self.hello_info is None:
+            self.hello()
+        return bool(self.hello_info.capabilities & cap)
+
+    def _max_payload(self) -> int:
+        if self.hello_info is None:
+            self.hello()
+        return self.hello_info.max_payload
+
+    def read_memory(self, addr: int, length: int) -> bytes:
+        """Read `length` bytes starting at `addr`.
+
+        Large reads are split into several requests, each at most the stub's
+        max_payload bytes (learned from HELLO, never hard-coded).
+        """
+        _check_u32("addr", addr)
+        _check_u32("length", length)
+        if addr + length > 0x1_0000_0000:
+            raise ValueError("range runs past the end of the 32-bit address space")
+        chunk = self._max_payload()
+        data = bytearray()
+        while len(data) < length:
+            n = min(chunk, length - len(data))
+            part = self.request(Cmd.MEM_READ, struct.pack(">II", addr + len(data), n))
+            if len(part) != n:
+                raise ProtocolError(f"asked for {n} bytes, stub returned {len(part)}")
+            data += part
+        return bytes(data)
+
+    def write_memory(self, addr: int, data: bytes) -> None:
+        """Write `data` at `addr`.
+
+        Each request carries 4 address bytes plus data, so a chunk holds at most
+        max_payload - 4 bytes. A write that fits ONE chunk is applied in a single
+        step; a longer one is several steps and can fail part way
+        (PartialWriteError). Keep patches that must be atomic within one chunk.
+        """
+        data = bytes(data)
+        _check_u32("addr", addr)
+        if addr + len(data) > 0x1_0000_0000:
+            raise ValueError("range runs past the end of the 32-bit address space")
+        chunk = self._max_payload() - 4
+        done = 0
+        while done < len(data):
+            part = data[done:done + chunk]
+            try:
+                self.request(Cmd.MEM_WRITE, struct.pack(">I", addr + done) + part)
+            except StatusError as e:
+                if done:
+                    raise PartialWriteError(done, len(data), e) from e
+                raise                       # nothing was written: the plain error is accurate
+            done += len(part)
+
+    def read_u32(self, addr: int) -> int:
+        """Read one big-endian 32-bit value (the Wii's native byte order)."""
+        return struct.unpack(">I", self.read_memory(addr, 4))[0]
+
+    def write_u32(self, addr: int, value: int) -> None:
+        _check_u32("value", value)
+        self.write_memory(addr, struct.pack(">I", value))
 
     def ping_rtt(self, size: int = 0) -> float:
         """Seconds taken for one PING round trip with a payload of `size` bytes."""

@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """wiidbg: PC-side client for the Wii Debug Protocol (WDP)."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

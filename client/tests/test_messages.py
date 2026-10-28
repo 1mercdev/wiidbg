@@ -55,6 +55,12 @@ class HelloVectors(unittest.TestCase):
         with self.assertRaises(frame.TooBig):
             messages.Hello(0, 1, 0, 0x4000, "x" * 32).encode()
 
+    def test_capability_bits_match_c_header(self):
+        self.assertEqual(int(messages.Cap.MEM_READ), 1)
+        self.assertEqual(int(messages.Cap.MEM_WRITE), 2)
+        self.assertEqual(int(messages.Cmd.MEM_READ), 0x0100)
+        self.assertEqual(int(messages.Cmd.MEM_WRITE), 0x0101)
+
     def test_enums_match_c_header(self):
         # Spot-check values that must equal common/wdp.h.
         self.assertEqual(int(messages.Cmd.HELLO), 0x0001)

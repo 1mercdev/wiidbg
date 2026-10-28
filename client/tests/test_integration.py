@@ -13,8 +13,10 @@ import time
 import unittest
 
 from wiidbg import frame
-from wiidbg.conn import Connection, ConnectionClosed, ProtocolError, StatusError
-from wiidbg.messages import Cmd, Status
+from wiidbg.conn import (Connection, ConnectionClosed, PartialWriteError,
+                         ProtocolError, StatusError)
+from wiidbg.messages import (MEM1_BASE, MEM1_SIZE, MEM2_BASE, MEM2_SIZE, Cap, Cmd,
+                             Status)
 
 HOSTSERVER = pathlib.Path(__file__).resolve().parents[2] / "tests" / "host" / "bin" / "hostserver"
 
@@ -57,10 +59,10 @@ class IntegrationTest(unittest.TestCase):
     def test_hello(self):
         with self.client() as c:
             h = c.hello()
-        self.assertEqual((h.stub_major, h.stub_minor), (0, 1))
+        self.assertEqual((h.stub_major, h.stub_minor), (0, 2))
         self.assertEqual(h.max_payload, frame.MAX_PAYLOAD)
-        self.assertEqual(h.capabilities, 0)
-        self.assertTrue(h.build.startswith("0.1.0"))
+        self.assertEqual(h.capabilities, Cap.MEM_READ | Cap.MEM_WRITE)
+        self.assertTrue(h.build.startswith("0.2.0"))
 
     def test_ping_sizes(self):
         with self.client() as c:
@@ -153,6 +155,154 @@ class IntegrationTest(unittest.TestCase):
             s.close()
         with self.client() as c:                              # still healthy afterwards
             c.ping(b"ok")
+
+
+    # -- memory (Phase 2) --------------------------------------------------
+    # The server's RAM is fake (plain buffers), so these test the PROTOCOL:
+    # what you write is what you read back, across chunk and region boundaries.
+    # Most tests use their own address range. The tests that touch the very end of
+    # a region cannot, so they never assume what was there before.
+
+    def test_seed_text_is_readable(self):
+        with self.client() as c:
+            self.assertEqual(c.read_memory(0x80000100, 20), b"wiidbg host fake RAM")
+
+    def test_write_then_read_round_trip(self):
+        with self.client() as c:
+            data = bytes(range(256))
+            c.write_memory(0x80010000, data)
+            self.assertEqual(c.read_memory(0x80010000, 256), data)
+            self.assertEqual(c.read_memory(0x80010010, 16), data[16:32])   # a slice of it
+
+    def test_unaligned_addresses_and_odd_sizes(self):
+        with self.client() as c:
+            for i, size in enumerate((1, 2, 3, 5, 7, 31, 33)):
+                addr = 0x80020001 + i * 100                                 # never 4-aligned
+                data = bytes((j * 7 + size) & 0xFF for j in range(size))
+                c.write_memory(addr, data)
+                self.assertEqual(c.read_memory(addr, size), data, f"size {size}")
+
+    def test_mem2_works_too(self):
+        with self.client() as c:
+            c.write_memory(MEM2_BASE + 0x1234, b"in MEM2")
+            self.assertEqual(c.read_memory(MEM2_BASE + 0x1234, 7), b"in MEM2")
+
+    def test_large_transfers_are_chunked_by_the_client(self):
+        with self.client() as c:
+            size = 100_000                         # about 6 chunks each way
+            data = bytes((i * 31 + (i >> 8)) & 0xFF for i in range(size))
+            c.write_memory(0x80100001, data)
+            self.assertEqual(c.read_memory(0x80100001, size), data)
+
+    def test_chunk_boundaries_are_exact(self):
+        with self.client() as c:
+            chunk_w = c.hello().max_payload - 4    # biggest write per request
+            for size in (chunk_w - 1, chunk_w, chunk_w + 1, 2 * chunk_w, 2 * chunk_w + 1):
+                data = bytes((i + size) & 0xFF for i in range(size))
+                c.write_memory(0x80200000, data)
+                self.assertEqual(c.read_memory(0x80200000, size), data, f"size {size}")
+
+    def test_regions_edges(self):
+        with self.client() as c:
+            last = MEM1_BASE + MEM1_SIZE - 1
+            c.write_memory(last, b"Z")                                     # the very last byte
+            self.assertEqual(c.read_memory(last, 1), b"Z")
+            with self.assertRaises(StatusError) as cm:                     # one past it
+                c.read_memory(last + 1, 1)
+            self.assertEqual(cm.exception.status, Status.ERR_RANGE)
+            end2 = MEM2_BASE + MEM2_SIZE - 1
+            c.write_memory(end2, b"Y")
+            self.assertEqual(c.read_memory(end2, 1), b"Y")
+
+    def test_forbidden_addresses_are_refused_and_the_connection_survives(self):
+        with self.client() as c:
+            for addr in (0x00000000, 0x0C000000, 0xC0000000, 0xCC000000, 0xFFFFFFFC):
+                with self.assertRaises(StatusError) as cm:
+                    c.read_memory(addr, 4)
+                self.assertEqual(cm.exception.status, Status.ERR_RANGE, hex(addr))
+                with self.assertRaises(StatusError) as cm:
+                    c.write_memory(addr, b"\x00\x00\x00\x00")
+                self.assertEqual(cm.exception.status, Status.ERR_RANGE, hex(addr))
+            c.ping(b"still here")                                          # no disconnect
+
+    def test_a_refused_write_changes_nothing(self):
+        with self.client() as c:
+            end = MEM1_BASE + MEM1_SIZE
+            c.write_memory(end - 4, b"\xAA\xBB\xCC\xDD")
+            with self.assertRaises(StatusError):                          # 8 bytes: 4 inside, 4 outside
+                c.write_memory(end - 4, b"\x11" * 8)
+            self.assertEqual(c.read_memory(end - 4, 4), b"\xAA\xBB\xCC\xDD")   # untouched
+
+    def test_partial_write_is_reported_honestly(self):
+        with self.client() as c:
+            chunk = c.hello().max_payload - 4
+            end = MEM1_BASE + MEM1_SIZE
+            start = end - chunk - 10               # room for chunk 1, not for chunk 2
+            # Other tests also touch the end of MEM1, so do not assume zeros:
+            # remember what is there and check it is unchanged afterwards.
+            tail_before = c.read_memory(end - 10, 10)
+            with self.assertRaises(PartialWriteError) as cm:
+                c.write_memory(start, b"\x77" * (chunk + 100))
+            e = cm.exception
+            self.assertEqual((e.written, e.total), (chunk, chunk + 100))
+            self.assertEqual(e.cause.status, Status.ERR_RANGE)
+            self.assertEqual(c.read_memory(start, 4), b"\x77" * 4)         # first chunk DID land
+            self.assertEqual(c.read_memory(end - 10, 10), tail_before)     # second did not
+
+    def test_u32_helpers_use_big_endian(self):
+        with self.client() as c:
+            c.write_u32(0x80030000, 0x01020304)
+            self.assertEqual(c.read_memory(0x80030000, 4), b"\x01\x02\x03\x04")
+            self.assertEqual(c.read_u32(0x80030000), 0x01020304)
+            c.write_u32(0x80030004, 0xFFFFFFFF)
+            self.assertEqual(c.read_u32(0x80030004), 0xFFFFFFFF)
+
+    def test_empty_transfers_need_no_network(self):
+        with self.client() as c:
+            self.assertEqual(c.read_memory(0x80000000, 0), b"")
+            c.write_memory(0x80000000, b"")
+
+    def test_argument_validation_happens_before_sending(self):
+        with self.client() as c:
+            for bad in (lambda: c.read_memory(-1, 4), lambda: c.read_memory(0, -1),
+                        lambda: c.read_memory(0x1_0000_0000, 1),
+                        lambda: c.read_memory(0xFFFFFFFF, 2),
+                        lambda: c.write_memory(0xFFFFFFFF, b"ab"),
+                        lambda: c.write_u32(0x80000000, 0x1_0000_0000)):
+                with self.assertRaises(ValueError):
+                    bad()
+            c.ping(b"nothing was sent for those")
+
+    def test_malformed_memory_requests_get_bad_payload(self):
+        with self.client() as c:
+            for payload in (b"", b"\x00" * 7, b"\x00" * 9):
+                with self.assertRaises(StatusError) as cm:
+                    c.request(Cmd.MEM_READ, payload)
+                self.assertEqual(cm.exception.status, Status.ERR_BAD_PAYLOAD)
+            for payload in (b"", b"\x80\x00\x00\x00"):                       # no data bytes
+                with self.assertRaises(StatusError) as cm:
+                    c.request(Cmd.MEM_WRITE, payload)
+                self.assertEqual(cm.exception.status, Status.ERR_BAD_PAYLOAD)
+
+    def test_oversize_read_request_is_refused_cleanly(self):
+        with self.client() as c:
+            import struct
+            with self.assertRaises(StatusError) as cm:
+                c.request(Cmd.MEM_READ, struct.pack(">II", 0x80000000, frame.MAX_PAYLOAD + 1))
+            self.assertEqual(cm.exception.status, Status.ERR_TOO_BIG)
+            c.ping(b"ok")
+
+    def test_supports_reports_capabilities(self):
+        with self.client() as c:
+            self.assertTrue(c.supports(Cap.MEM_READ))
+            self.assertTrue(c.supports(Cap.MEM_WRITE))
+
+    def test_two_sessions_see_the_same_memory(self):
+        a = self.client()
+        a.write_memory(0x80040000, b"shared")
+        a.close()
+        with self.client() as b:
+            self.assertEqual(b.read_memory(0x80040000, 6), b"shared")
 
     # -- session policy ----------------------------------------------------
     def test_newest_connection_replaces_the_old_one(self):
