@@ -30,5 +30,6 @@ docs/protocol.md.
 - (+) Extensible without breaking old peers; testable with golden vectors.
 - (+) Bounded `length` defends the console against hostile or buggy input.
 - (−) 16 bytes of overhead per frame. Irrelevant next to network latency.
-- (−) No checksum: TCP already provides one. Serial transports (USB Gecko) will
-  need one; that is what a `flags` bit would announce.
+- (−) No checksum: TCP already provides one. A future transport without built-in
+  error detection (a serial link, say) would need one; that is what a `flags` bit
+  would announce.

@@ -1,6 +1,7 @@
 # ADR 0003: Ring buffers + pluggable sinks, with a separate exception path
 
-Status: accepted
+Status: accepted. Partly superseded by [ADR 0007](0007-no-usb-gecko.md): the USB Gecko
+sink and crash path mentioned below are no longer planned.
 
 ## Context
 

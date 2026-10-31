@@ -13,7 +13,8 @@ Why a custom protocol, and why this shape? See
 
 ## 1. Concepts
 
-WDP runs over a reliable byte stream (TCP in Phase 1; USB Gecko serial later).
+WDP runs over a reliable byte stream (TCP today; the framing would work unchanged over
+any other ordered byte stream).
 A stream has **no message boundaries**: two `send()` calls can arrive as one
 `recv()`, and one `send()` can arrive as several. Every message therefore
 starts with a fixed-size **header** that says how many payload bytes follow.

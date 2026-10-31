@@ -20,7 +20,7 @@ place in the main loop later hands records to pluggable sinks.**
  normal code ──► ring[NORMAL] ──┐
                                  ├─► wdlog_flush() ─► sink: console (TV)
  exception handler ► ring[EXC] ──┘   (main loop)      sink: network / PC   (Phase 1+)
-                                                       sink: USB Gecko      (Phase 4)
+                                                       sink: SD-card file   (later)
 ```
 
 ## Properties, and the test that proves each
@@ -58,11 +58,25 @@ stated assumption, not an accident.)
 |------|------|-----------------------|-------|
 | console (TV) | Phase 0 | no, main loop only | slow, but zero setup |
 | in-band EVENT frames to the PC | Phase 1 | no, main loop only | needs the network up |
-| USB Gecko (EXI serial) | Phase 4 | **yes**, talks to hardware directly, no IOS | the only way to see a crash that kills the network |
-| SD-card file | later | no | survives a reboot |
+| SD-card file | later | no | survives a reboot; holds only what was flushed before a crash |
 
 ## Compile-time stripping
 
 `-DWDLOG_COMPILE_LEVEL=2` (INFO) removes DEBUG/TRACE calls from the binary
 entirely: zero size, zero cost. Runtime filtering (per sink) is separate and
 cheap: if no sink wants a level, the message is not even formatted.
+
+## When the stub itself crashes
+
+Every sink above is fed from the main loop, so a hard crash can lose the records
+not yet flushed. There is no hardware-assisted crash channel (see
+[ADR 0007](adr/0007-no-usb-gecko.md)), so visibility rests on three things:
+
+1. **Handlers are built to return.** The exception handlers planned for
+   watchpoints and breakpoints only record an event and resume. The main loop, the
+   network and the log keep running, so most events never involve a crash at all.
+2. **libogc's own crash screen.** An unhandled fault shows a register and code
+   dump on the TV. The map file the Makefile already writes (`build/*.map`) turns
+   those addresses into function names, which is usually enough to find the bug.
+3. **Flush before risky steps.** Code about to do something dangerous can call
+   `wdlog_flush()` first so the last message before the crash is already out.

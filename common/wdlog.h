@@ -9,7 +9,7 @@
  * The one idea to remember:  PRODUCERS NEVER TOUCH A DEVICE.
  *   Code that logs only copies a small record into a RAM ring buffer.
  *   Later, from the main loop, wdlog_flush() hands the records to SINKS
- *   (screen, network, USB Gecko, ...). That separation is what makes it safe
+ *   (screen, network, a file, ...). That separation is what makes it safe
  *   to log from places where printing or networking would hang the console,
  *   such as an exception handler.
  */
